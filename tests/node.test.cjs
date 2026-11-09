@@ -23,13 +23,55 @@ async function modelFor(parameters, key) {
 	const { response } = await node.supplyData.call(context(parameters, key), 0);
 	return response;
 }
-test('API key is secret and bearer authentication is configured', () => {
+// Drive the credential-level declaration through the same authenticate/request
+// order as n8n. Provider calls still run against the local HTTP fixture.
+async function runCredentialTest(_context, credentialData) {
+	const credential = new CortecsApi();
+	try {
+		const options = await credential.authenticate(
+			credentialData.data,
+			structuredClone(credential.test.request),
+		);
+		const response = await fetch(`${options.baseURL}${options.url}`, {
+			method: options.method,
+			headers: { 'Content-Type': 'application/json', ...options.headers },
+			body: JSON.stringify(options.body),
+		});
+		await response.text();
+		const rule = credential.test.rules.find((rule) => rule.properties.value === response.status);
+		return response.ok
+			? { status: 'OK' }
+			: {
+					status: 'Error',
+					message: rule?.properties.message ?? 'Check your connection and Cortecs configuration',
+				};
+	} catch (error) {
+		return { status: 'Error', message: error.message };
+	}
+}
+test('credential declares a portal-visible test and authenticates normal requests without inference', async () => {
 	const credential = new CortecsApi();
 	assert.equal(credential.properties.find((p) => p.name === 'apiKey').typeOptions.password, true);
-	assert.equal(
-		credential.authenticate.properties.headers.Authorization,
-		'=Bearer {{$credentials.apiKey}}',
-	);
+	assert.equal(credential.test.request.method, 'POST');
+	assert.equal(credential.test.request.url, '/chat/completions');
+	assert.equal(credential.test.request.body.max_tokens, 1);
+	const stub = mock.method(globalThis, 'fetch', () => {
+		throw new Error('Normal requests must not trigger model discovery');
+	});
+	try {
+		const request = {
+			method: 'POST',
+			url: 'https://api.cortecs.ai/v1/chat/completions',
+			headers: { 'X-Custom': 'value' },
+			body: { model: 'chosen-by-user' },
+		};
+		const result = await credential.authenticate({ apiKey: 'local-test-key' }, request);
+		assert.equal(result.headers.Authorization, 'Bearer local-test-key');
+		assert.equal(result.headers['X-Custom'], 'value');
+		assert.deepEqual(result.body, request.body);
+	} finally {
+		stub.mock.restore();
+	}
 });
 test('node supplies the Cortecs model with provider defaults left unset', async () => {
 	const model = await modelFor({ model: { mode: 'id', value: 'text-model' } });
@@ -97,12 +139,13 @@ test('credential testing selects a model available to the authenticated account'
 	const requestedModels = [];
 	const stub = mock.method(globalThis, 'fetch', async (url, options = {}) => {
 		const authenticated = options.headers?.Authorization === 'Bearer restricted-test-key';
-		if (url.endsWith('/models')) {
+		if (String(url).endsWith('/models')) {
 			return new Response(
 				JSON.stringify({ data: authenticated ? [allowedModel] : [excludedModel, allowedModel] }),
 			);
 		}
-		assert.equal(url, 'https://api.cortecs.ai/v1/chat/completions');
+		assert.equal(String(url), 'https://api.cortecs.ai/v1/chat/completions');
+		assert.equal(options.headers['X-N8N-Cortecs-Credential-Test'], undefined);
 		const { model } = JSON.parse(options.body);
 		requestedModels.push(model);
 		return new Response('{}', {
@@ -110,10 +153,7 @@ test('credential testing selects a model available to the authenticated account'
 		});
 	});
 	try {
-		const result = await node.methods.credentialTest.cortecsApiTest.call(
-			{},
-			{ data: { apiKey: 'restricted-test-key' } },
-		);
+		const result = await runCredentialTest({}, { data: { apiKey: 'restricted-test-key' } });
 		assert.equal(result.status, 'OK');
 		assert.deepEqual(requestedModels, ['allowed-model']);
 	} finally {
@@ -139,15 +179,12 @@ test('credential testing gives status-specific guidance and handles timeouts saf
 			'fetch',
 			async (url) =>
 				new Response(
-					JSON.stringify(url.endsWith('/models') ? catalog : { error: 'secret-test-key' }),
-					{ status: url.endsWith('/models') ? 200 : status },
+					JSON.stringify(String(url).endsWith('/models') ? catalog : { error: 'secret-test-key' }),
+					{ status: String(url).endsWith('/models') ? 200 : status },
 				),
 		);
 		try {
-			const result = await node.methods.credentialTest.cortecsApiTest.call(
-				{},
-				{ data: { apiKey: 'secret-test-key' } },
-			);
+			const result = await runCredentialTest({}, { data: { apiKey: 'secret-test-key' } });
 			assert.equal(result.status, 'Error');
 			assert.match(result.message, guidance);
 			assert.ok(!result.message.includes('secret-test-key'));
@@ -163,10 +200,7 @@ test('credential testing gives status-specific guidance and handles timeouts saf
 			throw failure;
 		});
 		try {
-			const result = await node.methods.credentialTest.cortecsApiTest.call(
-				{},
-				{ data: { apiKey: 'secret-test-key' } },
-			);
+			const result = await runCredentialTest({}, { data: { apiKey: 'secret-test-key' } });
 			assert.equal(result.status, 'Error');
 			assert.match(
 				result.message,
@@ -225,19 +259,10 @@ test(
 		);
 		try {
 			assert.equal(
-				(
-					await node.methods.credentialTest.cortecsApiTest.call(
-						{},
-						{ data: { apiKey: 'local-test-key' } },
-					)
-				).status,
+				(await runCredentialTest({}, { data: { apiKey: 'local-test-key' } })).status,
 				'OK',
 			);
-			assert.equal(
-				(await node.methods.credentialTest.cortecsApiTest.call({}, { data: { apiKey: 'invalid' } }))
-					.status,
-				'Error',
-			);
+			assert.equal((await runCredentialTest({}, { data: { apiKey: 'invalid' } })).status, 'Error');
 		} finally {
 			redirect.mock.restore();
 		}

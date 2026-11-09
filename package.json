@@ -1,6 +1,6 @@
 {
 	"name": "n8n-nodes-cortecs",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"description": "Use Cortecs chat models in n8n AI agents and chains",
 	"license": "MIT",
 	"publishConfig": {
@@ -11,8 +11,8 @@
 		"n8n-community-node-package"
 	],
 	"author": {
-		"name": "Cortecs",
-		"email": "support@cortecs.ai"
+		"name": "Leon Christöfl",
+		"email": "leon.christoefl@cortecs.ai"
 	},
 	"repository": {
 		"type": "git",

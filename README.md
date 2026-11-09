@@ -22,7 +22,7 @@ Tested for local loading with n8n **2.45.7**. Your instance must support **AI No
 
 Create an API key in your [Cortecs account](https://cortecs.ai), then create a **Cortecs API** credential in n8n and enter the key in **API Key**.
 
-Testing the credential sends a one-token chat request to Cortecs and may incur a small charge. Workflow executions also use your Cortecs account and may incur charges.
+The credential includes a built-in connection test that automatically selects an inexpensive available text model. Testing the credential sends a one-token chat request to Cortecs and may incur a small charge. Workflow executions also use your Cortecs account and may incur charges.
 
 ## Quick start
 

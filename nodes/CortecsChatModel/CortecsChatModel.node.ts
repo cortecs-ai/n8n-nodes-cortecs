@@ -1,8 +1,5 @@
 import { supplyModel } from '@n8n/ai-node-sdk';
 import type {
-	ICredentialTestFunctions,
-	ICredentialsDecrypted,
-	INodeCredentialTestResult,
 	ILoadOptionsFunctions,
 	INodeListSearchResult,
 	INodeType,
@@ -13,41 +10,9 @@ import type {
 } from 'n8n-workflow';
 import { NodeApiError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
+import { httpStatus, requestGuidance } from './errors';
+
 const BASE_URL = 'https://api.cortecs.ai/v1';
-
-function requestGuidance(status?: number): string {
-	switch (status) {
-		case 401:
-			return "Cortecs did not accept the API key. Check the 'API Key' in your Cortecs API credential, or create a new key in the Cortecs console.";
-		case 402:
-			return 'Cortecs requires payment before completing this request. Check your balance and billing in the Cortecs console, then try again.';
-		case 403:
-			return 'Cortecs denied access to this request. Check your API key permissions and IP restrictions in the Cortecs console.';
-		case 404:
-			return 'Cortecs could not find the requested endpoint or model. Refresh the model list and try again; if this continues, contact Cortecs support.';
-		case 429:
-			return 'Cortecs is limiting requests. Wait before trying again and check your usage limits in the Cortecs console.';
-		default:
-			if (status !== undefined && status >= 500) {
-				return 'Cortecs is temporarily unable to complete the request. Try again later; if this continues, contact Cortecs support.';
-			}
-			return 'Could not complete the Cortecs request. Check your connection, API key, balance, IP restrictions, and service availability, then try again.';
-	}
-}
-
-function httpStatus(error: unknown): number | undefined {
-	if (typeof error !== 'object' || error === null) return undefined;
-	const details = error as {
-		status?: unknown;
-		statusCode?: unknown;
-		httpCode?: unknown;
-		response?: { status?: unknown };
-	};
-	const value = Number(
-		details.statusCode ?? details.status ?? details.httpCode ?? details.response?.status,
-	);
-	return Number.isInteger(value) && value >= 100 && value <= 599 ? value : undefined;
-}
 
 interface CortecsModel {
 	id: string;
@@ -71,7 +36,7 @@ export class CortecsChatModel implements INodeType {
 		inputs: [],
 		outputs: [NodeConnectionTypes.AiLanguageModel],
 		outputNames: ['Model'],
-		credentials: [{ name: 'cortecsApi', required: true, testedBy: 'cortecsApiTest' }],
+		credentials: [{ name: 'cortecsApi', required: true }],
 		properties: [
 			{
 				displayName: 'Model',
@@ -121,70 +86,6 @@ export class CortecsChatModel implements INodeType {
 	};
 
 	methods = {
-		credentialTest: {
-			async cortecsApiTest(
-				this: ICredentialTestFunctions,
-				credential: ICredentialsDecrypted,
-			): Promise<INodeCredentialTestResult> {
-				try {
-					const headers = { Authorization: `Bearer ${String(credential.data?.apiKey ?? '')}` };
-					// The credential-test context has no modern HTTP helper. Use native
-					// fetch to fixed Cortecs URLs rather than n8n's deprecated request API.
-					const catalogResponse = await fetch(`${BASE_URL}/models`, {
-						headers,
-						signal: AbortSignal.timeout(30000),
-					});
-					if (!catalogResponse.ok)
-						return { status: 'Error', message: requestGuidance(catalogResponse.status) };
-					const catalog = (await catalogResponse.json()) as {
-						data: (CortecsModel & { pricing?: { output_token?: number } })[];
-					};
-					// Prefer inexpensive non-reasoning models for a minimal, authenticated request.
-					const candidates = catalog.data.filter(
-						(model) =>
-							model.input_modalities?.includes('text') &&
-							model.output_modalities?.includes('text') &&
-							!model.supported_features?.includes('reasoning'),
-					);
-					candidates.sort(
-						(a, b) => (a.pricing?.output_token ?? Infinity) - (b.pricing?.output_token ?? Infinity),
-					);
-					if (!candidates.length) {
-						return {
-							status: 'Error',
-							message:
-								'No text model without reasoning is available for the credential test. Try again later; if this continues, contact Cortecs support.',
-						};
-					}
-					const response = await fetch(`${BASE_URL}/chat/completions`, {
-						method: 'POST',
-						headers: { ...headers, 'Content-Type': 'application/json' },
-						signal: AbortSignal.timeout(30000),
-						body: JSON.stringify({
-							model: candidates[0].id,
-							messages: [{ role: 'user', content: 'Hi' }],
-							max_tokens: 1,
-						}),
-					});
-					await response.text();
-					if (!response.ok)
-						return {
-							status: 'Error',
-							message: requestGuidance(response.status),
-						};
-					return { status: 'OK', message: 'Cortecs credentials are valid' };
-				} catch (error: unknown) {
-					return {
-						status: 'Error',
-						message:
-							error instanceof Error &&
-							(error.name === 'TimeoutError' || error.name === 'AbortError')
-								? 'The Cortecs credential test timed out. Check your connection and Cortecs service availability, then try again.'
-								: requestGuidance(),
-					};
-				}
-			},
-		},
 		listSearch: {
 			async getModels(
 				this: ILoadOptionsFunctions,
